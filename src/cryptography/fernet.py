@@ -27,7 +27,7 @@ _MAX_CLOCK_SKEW = 60
 
 
 class Fernet(object):
-    def __init__(self, key, backend=None):
+    def __init__(self, key, backend=None, encryption_alg='AES128', hash_alg='sha256'):
         if backend is None:
             backend = default_backend()
 
@@ -38,12 +38,24 @@ class Fernet(object):
             )
 
         self._signing_key = key[:16]
-        self._encryption_key = key[16:]
+
+        if hash_alg == 'sha384':
+            self._hash_cls = hashes.SHA384
+            self._hash_size = 48
+        elif hash_alg == 'sha256':
+            self._hash_cls = hashes.SHA256
+            self._hash_size = 32
+
+        if encryption_alg == 'AES128':
+            encryption_key_length = 16
+        elif encryption_alg == 'AES256':
+            encryption_key_length = 32
+        self._encryption_key = key[-encryption_key_length:]
         self._backend = backend
 
     @classmethod
-    def generate_key(cls):
-        return base64.urlsafe_b64encode(os.urandom(32))
+    def generate_key(cls, length=32):
+        return base64.urlsafe_b64encode(os.urandom(length))
 
     def encrypt(self, data):
         current_time = int(time.time())
@@ -65,7 +77,7 @@ class Fernet(object):
             b"\x80" + struct.pack(">Q", current_time) + iv + ciphertext
         )
 
-        h = HMAC(self._signing_key, hashes.SHA256(), backend=self._backend)
+        h = HMAC(self._signing_key, self._hash_cls(), backend=self._backend)
         h.update(basic_parts)
         hmac = h.finalize()
         return base64.urlsafe_b64encode(basic_parts + hmac)
@@ -102,15 +114,15 @@ class Fernet(object):
             if current_time + _MAX_CLOCK_SKEW < timestamp:
                 raise InvalidToken
 
-        h = HMAC(self._signing_key, hashes.SHA256(), backend=self._backend)
-        h.update(data[:-32])
+        h = HMAC(self._signing_key, self._hash_cls(), backend=self._backend)
+        h.update(data[:-self._hash_size])
         try:
-            h.verify(data[-32:])
+            h.verify(data[-self._hash_size:])
         except InvalidSignature:
             raise InvalidToken
 
         iv = data[9:25]
-        ciphertext = data[25:-32]
+        ciphertext = data[25:-self._hash_size]
         decryptor = Cipher(
             algorithms.AES(self._encryption_key), modes.CBC(iv), self._backend
         ).decryptor()
